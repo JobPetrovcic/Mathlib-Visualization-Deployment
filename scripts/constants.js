@@ -1,5 +1,5 @@
-const width = 1000
-const height = 600
+const width = window.innerWidth
+const height = window.innerHeight
 
 const startNodeColor = '#DF2E38'
 
