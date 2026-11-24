@@ -1,7 +1,7 @@
 // Lazily loaded graph data; the format is described in convert_to_js.py.
-// graph_data.js (loaded before this file) defines graphManifest; node tables ("n"), out-neighbour
-// lists ("a"), in-neighbour lists ("r") and the full name list ("names") are fetched per chunk of
-// chunkSize node ids by inserting <script> tags, so the page also works from file://.
+// graph_data.js (loaded before this file) defines graphManifest; node tables ("n", JSON),
+// out-neighbour lists ("a", binary), in-neighbour lists ("r", binary) and the full name list
+// ("names") are fetched per chunk of chunkSize node ids.
 const graphDataDir = 'graph_data/' // next to graph_data.js, relative to the page
 const chunkSize = graphManifest.chunkSize
 const numberOfNodes = graphManifest.nodeCount
@@ -11,42 +11,46 @@ var shownNodes = []
 const nodeChunks = [], adjacencyChunks = [], reverseChunks = []
 var allNames = null
 const chunkPromises = new Map()   // "kind_k" -> Promise
-const chunkResolvers = new Map()
 const extraNeighbours = new Map() // id -> [ids] added by InitiallyConnect
 
 function chunkOf(id) {
   return Math.floor(id / chunkSize)
 }
 
-// called by every loaded chunk file
+// binary edge chunk: uint32 rows, uint32 byteOffset[rows+1], varint-coded deltas per row
+function parseEdgeChunk(buffer) {
+  const rows = new DataView(buffer).getUint32(0, true)
+  return {
+    off: new Uint32Array(buffer, 4, rows + 1),
+    bytes: new Uint8Array(buffer, 4 + 4 * (rows + 1)),
+  }
+}
+
 function graphChunk(kind, k, payload) {
   if (kind == 'n') {
     nodeChunks[k] = payload
     createNodes(k, payload)
   } else if (kind == 'a') {
-    adjacencyChunks[k] = payload
+    adjacencyChunks[k] = parseEdgeChunk(payload)
   } else if (kind == 'r') {
-    reverseChunks[k] = payload
+    reverseChunks[k] = parseEdgeChunk(payload)
   } else if (kind == 'names') {
-    allNames = payload
-  }
-  const key = kind + '_' + k
-  if (chunkResolvers.has(key)) {
-    chunkResolvers.get(key)()
-    chunkResolvers.delete(key)
+    nameParts[k] = payload
   }
 }
+const nameParts = []
 
 function loadChunk(kind, k) {
   const key = kind + '_' + k
   if (chunkPromises.has(key)) return chunkPromises.get(key)
-  const promise = new Promise((resolve, reject) => {
-    chunkResolvers.set(key, resolve)
-    const script = document.createElement('script')
-    script.src = graphDataDir + key + '.js'
-    script.onerror = () => reject(new Error('could not load ' + script.src))
-    document.head.appendChild(script)
-  })
+  const binary = kind == 'a' || kind == 'r'
+  const url = graphDataDir + key + (binary ? '.bin' : '.json')
+  const promise = fetch(url)
+    .then(response => {
+      if (!response.ok) throw new Error('could not load ' + url + ': ' + response.status)
+      return binary ? response.arrayBuffer() : response.json()
+    })
+    .then(payload => graphChunk(kind, k, payload))
   chunkPromises.set(key, promise)
   return promise
 }
@@ -90,14 +94,34 @@ function ensureReverse(u) {
   return reverseChunks[k] ? Promise.resolve() : loadChunk('r', k)
 }
 
+// the full name list comes in graphManifest.namesFiles parts
 function ensureAllNames() {
-  return allNames ? Promise.resolve() : loadChunk('names', 0)
+  if (allNames) return Promise.resolve()
+  const parts = []
+  for (let j = 0; j < graphManifest.namesFiles; j++) parts.push(loadChunk('names', j))
+  return Promise.all(parts).then(() => { allNames = [].concat(...nameParts) })
 }
 
+// decode one row of an edge chunk: ascending ids, delta coded, LEB128 varints
 function csrRow(chunks, u) {
   const c = chunks[chunkOf(u)]
   const j = u % chunkSize
-  return c.t.slice(c.o[j], c.o[j + 1])
+  const bytes = c.bytes
+  let p = c.off[j]
+  const end = c.off[j + 1]
+  const out = []
+  let previous = 0
+  while (p < end) {
+    let value = 0, shift = 0, b
+    do {
+      b = bytes[p++]
+      value |= (b & 0x7f) << shift
+      shift += 7
+    } while (b & 0x80)
+    previous += value
+    out.push(previous)
+  }
+  return out
 }
 
 // out-neighbours of u (its adjacency chunk must be loaded)

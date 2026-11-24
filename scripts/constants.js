@@ -1,5 +1,6 @@
-const width = window.innerWidth
-const height = window.innerHeight
+// fill the window; inside the 1000x600 iframe of the agda-unimath docs this is the iframe size
+const width = window.innerWidth || 1000
+const height = window.innerHeight || 600
 
 const startNodeColor = '#DF2E38'
 
