@@ -1,4 +1,4 @@
-const rootName = 'library_Mathlib'
+const rootName = 'agda-unimath'
 
 var InitiallyRemoveNodes = []
-var InitiallyConnect = []
+var InitiallyConnect = [['agda-unimath', 'Agda']] // Add additional connections
